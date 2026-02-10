@@ -1,0 +1,600 @@
+---
+title: "STA662 Final Project:"
+subtitle: "Analysis of Country Development Profiles"
+author: "Nick Hatala, Tu Tran, Ishara Wijayaratne"
+format: 
+  html:
+    out-width: "30%"
+    out-height: "30%"
+    fontsize: "10pt"
+editor: visual
+---
+
+```{css, echo=FALSE}
+panel-caption, .figure-caption, .subfigure-caption, .table-caption, figcaption, caption {
+  text-align: center !important;
+  caption-side: bottom;
+}
+```
+
+## 1. Executive Summary
+
+This project aims to group countries into meaningful “development profiles” using 2020 economic, social, and environmental data published by the World Bank. These profiles are designed to draw out variables that drive differences between groups of countries in ways that are helpful to guiding regional economic, cultural, and health investment. The data includes large differences in scale and many missing values. We detail our approach to these challenges in Section 3. A correlation analysis showed that variables relate to each other in structured patterns, supporting the use of principle component analysis (PCA) to reduce complexity. Then, informed by the results of PCA, we tested both k-means and hierarchical clustering methods to construct development profiles, but selected hierarchical clustering for its stability and clearer interpretation. Eight distinct clusters of countries are identified, ranging from advanced economies to low-income nations, regional groups, and unique micro-states. The details of the PCA and clustering methods we employ are outlined in Section 4 (I) and (II) and the resulting insights are discussed in Section 5 (I), (II), and (III).
+
+## 2. Problem Description
+
+To inform the Wake Forest University Global Policy Initiative (WFUGPI)'s research on international development and policy strategy, we conduct an analysis to identify groups of countries with similar development profiles. We wish to extend the categorization of countries beyond simply “developed” and “developing” to groupings that capture more nuances. Specifically, we will be using a 2020 data set extracted from the World Bank Development Indicators, which consist of a variety of economic, social, and environmental metrics to develop a small number of country groupings that summarize broad global patterns in national progress. In particular, our two main objectives of analysis will be to:
+
+-   Identify variables or development characteristics that drive similarities and differences between or among countries.
+
+-   Apply clustering techniques to group countries and visualize groups based on a dimension reduction of those variables.
+
+## 3. Exploratory Data Analysis
+
+```{r, message=FALSE, comment=NA, warning=FALSE, echo=FALSE}
+library(readr)
+library(ggplot2)
+library(dplyr)
+library(tidyr) 
+library(naniar)
+library(corrplot)
+library(knitr)
+library(kableExtra)
+library(webshot)
+library(webshot2)
+
+library(VIM)
+library(gridExtra)
+library(cowplot)
+library(missMDA)
+library(AMR)
+library(countrycode)
+
+library(factoextra)
+library(dendextend)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(sf)
+library(RColorBrewer)
+
+world_dev <- read_csv("../data/world_dev.csv")
+world_dev <- world_dev[, -1]
+
+new_names <- gsub("_", " ", names(world_dev))
+names(world_dev) <- tools::toTitleCase(new_names)
+world_dev <- world_dev %>%
+  rename("Access to Electricity" = "Access Electricity", "Access to Water" = "Access Water", "Women in Parliament" = "Women Parliament")
+```
+
+Before conducting the multivariate analysis, we first need to understand the dataset. The World Bank's dataset consists of 217 observations for 27 variables. Given the diversity of development indicators and the expected differences in scale and distribution, we plotted boxplots of all numeric variables on a log10 scale to identify patterns, extreme values, and potential pre-processing needs. The log transformation was applied to accommodate the wide range of values observed in the dataset, specifically addressing the disproportionately large scale of GDP.
+
+```{r, fig.width = 10, dpi=300, message=FALSE, comment=NA, warning=FALSE, echo=FALSE, fig.cap = "Figure 1: Boxplots of Development Indicators (Log Scale)"}
+#| out-width: "75%"
+#| out-height: "75%"
+long_data <- world_dev %>%
+  select(where(is.numeric)) %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = "Feature", 
+    values_to = "Value"
+  ) %>%
+  mutate(Value = Value + 1e-6) %>% 
+  filter(!is.na(Value))
+
+ggplot(long_data, aes(x = Feature, y = Value)) +
+  geom_boxplot(
+    aes(fill = Feature), 
+    outlier.color = "black", 
+    outlier.shape = 16,
+    outlier.size = 1.25
+  ) +
+  scale_y_log10() +       
+  coord_flip() +
+  labs(
+    x = NULL,
+    y = "Value (log scale)"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    panel.grid.major = element_line(color = "gray85", size = 0.3),
+    panel.grid.minor = element_line(color = "gray93", size = 0.2),
+    axis.text.y = element_text(size = 8),
+    axis.text.x = element_text(size = 8)
+  ) + 
+  theme(legend.position="none")
+```
+
+The log-scaled boxplots reveal skewness, extreme outlying countries, and the differences in variance of the data for different variables. Overall, these plots justify the need to standardize data in later multivariate analyses, ensuring that differences in variable scale do not disproportionately influence dimension reduction or clustering.
+
+In addition to scale differences, the dataset contains a substantial number of missing values, which must be addressed to avoid bias or distortion in the analysis. A preliminary inspection revealed a total of 1,087 missing values across the dataset; visual diagnostics clearly show that missingness is not random - it varies considerably by variable and by country.
+
+```{r, fig.width = 7, dpi = 300, message=FALSE, comment=NA, warning=FALSE, echo=FALSE, fig.cap = "Figure 2: Visualization of Missing Data Structure and Proportions by Rows"}
+#| out-width: "70%"
+#| out-height: "70%"
+row.plot <- world_dev %>%
+  mutate(id = row_number()) %>%
+  gather(-id, key = "key", value = "val") %>%
+  mutate(isna = is.na(val)) %>%
+  ggplot(aes(x = id, y = key, fill = isna)) +
+    geom_raster(alpha=0.8) +
+    scale_fill_manual(name = "",
+        values = c('blue', 'red'),
+        labels = c("Present", "Missing")) +
+    labs(x = "Row Number",       
+         y = "Variable",         
+         title = "Missing values in rows") + 
+  theme(legend.position = "none", 
+        plot.title = element_text(size = 10))
+
+percentage.plot <- world_dev %>%
+  gather(key = "key", value = "val") %>%
+  mutate(isna = is.na(val)) %>%
+  group_by(key) %>%
+  mutate(total = n()) %>%
+  group_by(key, total, isna) %>%
+  summarise(num.isna = n()) %>%
+  mutate(pct = num.isna / total * 100) %>%
+  ggplot() +
+    geom_bar(aes(x = pct, 
+                 y = key, fill=isna), 
+             stat = 'identity', alpha=0.8) +
+  scale_fill_manual(name = "", 
+                    values = c('blue', 'red'), labels = c("Present", "Missing")) +
+  labs(title = "Percentage of missing values in rows", x = "% of missing values", y = NULL) + theme(
+    axis.text.y = element_blank(), 
+    plot.title = element_text(size = 10))
+
+plot_grid(row.plot, percentage.plot, ncol = 2, rel_widths = c(2.5, 1.25))
+```
+
+We notice that there are two columns, Poverty and Literacy Rate which are missing more than 65% of their values. Because such extensive missingness risks introducing bias during imputation and contributes little informational value for clustering, both variables were removed from subsequent analysis. After eliminating these columns, we conducted a second pass to evaluate missingness at the row (country) level and removed 11 countries which are missing more than 50% of their remaining variables: American Samoa, Aruba, British Virgin Islands, Channel Islands, Curacao, Gibraltar, Greenland, Isle of Man, Kosovo, Sint Maarten (Dutch part), and St. Martin (French part).
+
+```{r, message=FALSE, comment=NA, warning=FALSE, echo=FALSE}
+cols_to_remove <- miss_var_summary(world_dev) %>%
+  filter(pct_miss > 65) %>%
+  pull(variable)
+
+world_dev <- world_dev %>% #Removes selected variables
+  select(-all_of(cols_to_remove))
+
+rows_to_remove <- miss_case_summary(world_dev) %>% 
+  filter(pct_miss > 50) %>%
+  pull(case)
+
+world_dev <- world_dev %>% #Removes selected rows
+  slice(-rows_to_remove)
+```
+
+```{r, message=FALSE, comment=NA, warning=FALSE, echo=FALSE}
+# Replace missing values in all numeric columns (skip first two character columns)
+world_dev[ , -c(1, 2)] <- 
+  lapply(world_dev[ , -c(1, 2)], function(x) {
+    if (is.numeric(x)) {
+      med <- median(x, na.rm = TRUE)
+      x[is.na(x)] <- med
+    }
+    return(x)
+  })
+```
+
+For the remaining missing values, we implemented median imputation for each variable. Median imputation was selected for two reasons:
+
+-   Robustness to skewness
+-   Resilience to outliers in the dataset.
+
+After data removal and data processing, we are left with a data set of 23 numerical variables. We then examined how the variables relate to one another. We computed the correlation matrix for all post-imputation variables, shown in Figure 3. Dark blue squares indicate that two variables are highly positively correlated, while dark red squares indicate that two variables are highly negatively correlated. White squares indicate two variables are relatively uncorrelated.
+
+```{r, fig.width=7, dpi=400, message=FALSE, comment=NA, warning=FALSE, echo=FALSE, fig.cap="Figure 3: Correlation Matrix"}
+#| out-width: "65%"
+#| out-height: "65%"
+cor_mat_impute <- cor(world_dev %>%
+  select(where(is.numeric)), use = "pairwise.complete.obs")
+
+corrplot(cor_mat_impute, method = "color", type = "upper", 
+         tl.col = "black", tl.srt = 45, tl.cex = 0.8) 
+```
+
+We see that the columns are in general, not very highly correlated. However, there are still several coherent clusters of correlated variables that emerged. These patterns suggest that the dataset is multidimensional, validating the appropriateness of dimension reduction tools such as PCA for extracting interpretable axes of variation.
+
+## 4. Methods
+
+### (I) PCA (Principle Component Analysis)
+
+To be able to group countries into similar development profiles, we hope to be able to identify variables that explain variation between or among groups. These variables differentiate countries the most, helping policymakers understand and compare national development pathways. To facilitate this, we employ principal component analysis (PCA).
+
+PCA is a method for dimension reduction - it reorganizes the data so the most important underlying patterns come first, making complex multidimensional datasets easier to understand and analyze using traditional 2-dimensional or 3-dimensional visualizations. To be specific, PCA describes the variation in a set of correlated variables in terms of a new set of uncorrelated variables (principal components, or PCs), each formed from a linear combination of the original. The first principal component captures the direction of maximum variance, and each subsequent component captures the next largest variance while remaining orthogonal (uncorrelated) to the previous components. Observations (in our case, countries) can then be plotted onto a plot of the first two principle components (that is, the two principle components that capture the largest variation in the dataset) to extract insight into the relationship between observations.
+
+### (II) Clustering
+
+Clustering is a technique that aims to partition data into groups of observations, where within group observations tend to be more similar than between group observations.
+
+We considered two algorithims to segment the data: K-means and agglomerative hierarchical clustering. K-means clustering is an algorithm where a predefined number of clusters is chosen, and the optimal assignment of individual observations is found by minimizing the within group dispersion until further minimization is no longer possible. Agglomerative hierarchical clustering begins with all observations as unique clusters and iteratively merges until all observations are in the same cluster or a stopping criterion is met.
+
+Ultimately, we determined to use hierarchical clustering over k-means clustering for 2 reasons. First, k-means clustering is a stochastic, or random, algorithm. This means that the final clustering assignments could be different from one execution of the algorithm to the next when holding the number of clusters constant, especially when the underlying data set has a high number of variables, as in our case. Second, an advantage of hierarchical clustering is the ability to understand how closely related clusters are to one another. This might be particularly useful in this case, where we might want to understand how different national development profiles that are developed under the algorithm are related to one another. We selected to stop the hierarchical clustering algorithim at 8 clusters to balance ease of interpretation and a more nuanced segmentation of countries' national development.
+
+## 5. Discussion
+
+### (I) Principle Component Analysis (PCA)
+
+We carried out a PCA on the dataset accounting for different scales of variables, as explained in Section 3.
+
+The first PC explains 35% of the total variance in the dataset, while all subsequent PCs explain less than 10% individually. This implies that while much of the variation between countries can be explained by a single composite of metrics (which, as we will see, are associated with traditional economic development attributes), there is also considerable variation to be explained by other less traditionally considered variables.
+
+#### Variable Contribution to Principle Components
+
+An advantage of using PCA is it allows us to identify the original variables that contribute strongly, either positively or negatively, to each principal component.
+
+```{r, message=FALSE, comment=NA, warning=FALSE, echo=FALSE}
+world_dev$Continent <- countrycode(world_dev$Country,
+                                   origin = "country.name",
+                                   destination = "continent")
+
+world_dev_pca <- world_dev %>% select(-Country, -Code, -Continent)
+
+# Run PCA on R
+Rpca <- prcomp(world_dev_pca, center = TRUE, scale = TRUE)
+
+# Percentage variance explained by each PC
+eigenvalues <- Rpca$sdev^2
+
+pct_var <- eigenvalues / sum(eigenvalues) * 100
+pct_var <- round(pct_var,2)
+
+pca_var_table <- data.frame(
+  PC = paste0("PC", seq_along(eigenvalues)),
+  Percent_Variance = pct_var
+)
+```
+
+These variables are listed in Table 1 below in order of importance. For each principal component, variables appearing at the top of the column contribute more strongly than those listed later. For example, under the PC1 column, six variables were identified as strong contributors, with the first variable 'Internet Use' having the greatest contribution (which is negative) among them. If a variable is included within brackets '()' it indicates that it contributes negatively to that principle component.
+
+```{r, message=FALSE, comment=NA, warning=FALSE, echo=FALSE, fig.height=10, fig.width=6}
+#| out-width: "60%"
+#| out-height: "60%"
+#| fig-align: center
+
+df <- data.frame(
+  PC1 = c("(Internet Use)", "Birth Rate", "(Life Expectancy)", "Infant Mortality",
+          "Agriculture", "(Access to Electricity)",  ""), #0.25 above
+  
+  PC2 = c( "(Exports)","(Imports)", "Education Expenditure","Health Expenditure",
+           "Crop Land", "(Food Production)","Unemployment"), #0.25 above
+  
+  PC3 = c( "Imports", "Crop Land","Education Expenditure",
+           "Exports","Health Expenditure", "", ""), #0.25 above
+  
+  PC4 = c("Women in Parliament","HIV", "Unemployment", "(Cropland)","Renewable", 
+          "Health Expenditure", ""), #0.25 above
+  
+  PC5 = c("(Unemployment)","Hospital Beds", "Physicians", "", "", "", ""),
+  
+  PC6 = c("HIV","(Women in Parliament)", "Hospital Beds", "(Food Production)",  "(Education Years)",  "", ""),
+  
+  PC7 = c("(CO2)", "(Food Production)", "", "", "", "", ""),
+  
+  stringsAsFactors = FALSE
+)
+
+# column headers including percentages
+col_headers <- c(
+  "PC1 (35.06%)",
+  "PC2 (9.20%)",
+  "PC3 (6.74%)",
+  "PC4 (6.44%)",
+  "PC5 (5.28%)",
+  "PC6 (4.94%)",
+  "PC7 (4.45%)"
+)
+
+kable(
+  caption = "Table 1: Orginal Variable contribution to each PC in order of importance. Variables within brackes contribute negatively.", 
+  df,
+  format = "html",
+  align = "c",
+  col.names = col_headers
+) %>%
+  kable_styling(full_width = FALSE, position = "center")
+
+
+```
+
+#### Biplot of Principle Components
+
+PC1 and PC2 capture 40% of the variability in the dataset. In Figure 4 we visualize the "biplot" of these two principal components, which plots each country with respect to their PC1 and PC2 scores. The arrows represent how the most strongly correlated original variables contribute to these principles components.
+
+```{r, message=FALSE, comment=NA, warning=FALSE, echo=FALSE, fig.cap = "Figure 4: PC1 vs PC2 plot with Original Variable Projection"}
+#| fig-align: center
+#| out-width: "60%"
+#| out-height: "60%"
+world_dev_pca <- world_dev %>% select(-Country, -Code, -Continent)
+
+# Run PCA on R
+Rpca <- prcomp(world_dev_pca, center = TRUE, scale = TRUE)
+
+# Your existing PCA dataframe
+pca_df <- data.frame(
+  PC1 = Rpca$x[, 1],
+  PC2 = Rpca$x[, 2],
+  PC3 = Rpca$x[, 3],
+  PC4 = Rpca$x[, 4],
+  PC5 = Rpca$x[, 5],
+  PC6 = Rpca$x[, 6],
+  PC7 = Rpca$x[, 7],
+  Continent = world_dev$Continent
+)
+
+
+# Selected variables for arrows
+selected_vars_pc1 <- c("Internet Use", "Birth Rate", "Life Expectancy", 
+                   "Infant Mortality", "Agriculture", "Access to Electricity",
+                   
+                   "Exports","Imports", "Education Expenditure","Health
+                   Expenditure","Cropland", "Food Production","Unemployment"
+                   
+                   )
+
+# Extract loadings for PC1 and PC2
+loadings <- as.data.frame(Rpca$rotation[, 1:2])
+loadings$Variable <- rownames(loadings)
+
+# Keep only selected variables
+loading_sel_pc1 <- loadings %>% filter(Variable %in% selected_vars_pc1)
+
+# Scale factor for arrows (adjust for visibility)
+arrow_scale <- 5  # tweak if arrows too small/large
+loading_sel_pc1 <- loading_sel_pc1 %>%
+  mutate(PC1 = PC1 * arrow_scale,
+         PC2 = PC2 * arrow_scale)
+
+# Create the plot
+ ggplot(pca_df, aes(x = PC1, y = PC2)) +
+  geom_point(size = 2.0, alpha = 0.4, color="#1F65CC") +
+  labs(
+    x = "PC1",
+    y = "PC2"
+  ) +
+  theme_minimal() +
+  # Add arrows for selected variables
+  geom_segment(data = loading_sel_pc1,
+               aes(x = 0, y = 0, xend = PC1, yend = PC2),
+               arrow = arrow(length = unit(0.3, "cm")),
+               color = "black",
+               alpha=0.6) +
+  #Adds arrow text
+ geom_text(data = loading_sel_pc1,
+          aes(x = PC1, y = PC2, label = Variable),
+          color = "black",
+          size = 2.5,        # slightly larger
+          nudge_x = 0.1,   # small horizontal shift to prevent overlap
+          nudge_y = 0.2,
+          alpha= 0.9)   # small vertical shift
+
+
+```
+
+In Figure 4, we can see that "Agriculture", "Birth Rate" and "Infant Mortality" are positively correlated with PC1 while "Access to Electricity", "Internet Use" and "Life Expectancy" are negatively correlated. This can be confirmed by referring to Table 1 (first column). So, it is clear that PC1 is positively correlated with variables that are traditionally associated with "developing countries" (high birth rates and infant mortality) and negatively correlated with variables are associated with "developed countries" (high internet usage and access to electricity). So, PC1 represents a "holistic development" axis. PC2, on the other hand, is most strongly associated with exports and imports as a percentage of GDP. This implies it can be interpreted as a "trade" axis, as countries with more negative PC2 scores are more reliant on trade for their economic activity while those with higher PC2 score are less dependent.
+
+### (II) Clustering
+
+```{r, message=FALSE, comment=NA, warning=FALSE, echo=FALSE, fig.show='hide', fig.cap = "K-means Clustering with 1st and 2nd PCs"}
+#| out-width: "60%"
+#| out-height: "60%"
+world_dev_modified <- world_dev
+scaled_df <- data.frame(scale(world_dev_pca))
+
+WGSS <- sapply(1:10, function(zz) kmeans(scaled_df, centers = zz)$tot.withinss)
+
+wgss <- ggplot() +
+          geom_point(aes(x = 1:10, y = WGSS)) +
+          geom_line(aes(x = 1:10, y = WGSS)) +
+          labs(title = "WGSS by Number of Clusters", x = "K", y = "WGSS") +
+          theme_bw()
+
+wgss
+
+kmeans = kmeans(scaled_df, centers = 3 )
+world_dev_modified$cluster_kmeans = kmeans$cluster
+
+kmeans_1 <- ggplot() +
+          geom_point(aes(x = Rpca$x[,1], y = Rpca$x[,2], color = factor(world_dev_modified$cluster_kmeans))) +
+          labs(x = "PC1", y = "PC2") +
+          labs(color = "Cluster") + 
+          theme_minimal()
+
+kmeans_1
+```
+
+We developed 8 distinct "development profile" clusters of countries using the hierarchical agglomeration clustering algorithm run on the scaled, centered dataset to prevent overemphasis on variables with larger ranges. These segments are displayed in Table 2 below.
+
+```{r, message=FALSE, comment=NA, warning=FALSE, echo=FALSE}
+#| fig-align: center
+#| out-width: "60%"
+#| out-height: "60%"
+rownames(scaled_df) <- world_dev_modified$Country
+
+dist_matrix <- dist(scaled_df, method = "euclidean")
+hc_result <- hclust(dist_matrix, method = "ward.D2")
+dend <- as.dendrogram(hc_result)
+
+#heights <- hc_result$height
+#jumps <- diff(heights)
+#max_jump_index <- which.max(jumps)
+#cut_height <- (heights[max_jump_index] + heights[max_jump_index + 1]) / 2
+
+k <- 8 
+
+clusters_hi1 <- cutree(hc_result, k = k)
+world_dev_modified$cluster_hi1 <- clusters_hi1
+
+pastel_palette <- brewer.pal(8, "Set2")
+cluster_colors <- structure(pastel_palette, names = 1:k)
+
+groups <- cutree(dend, k = k)
+visual_order <- unique(groups[order.dendrogram(dend)])
+final_colors <- cluster_colors[as.character(visual_order)]
+
+dend_colored <- color_branches(dend, k = k, col = final_colors)
+
+cluster_summary <- data.frame(
+  Cluster = c(1, 2, 3, 4, 5, 6, 7, 8),
+  
+  Name = c(
+    "The Developing Giants",
+    "The Global Middle Class",
+    "Established Economies",
+    "Least Developed Countries",
+    "Diverse, Trading Economies",
+    "Southern Africa",
+    "Hyper-Wealthy Financial Hubs",
+    "Pacific Micro-States"
+  ),
+  
+  Examples = c(
+    "India, Indonesia, Bangladesh",
+    "China, Brazil, Mexico, Turkey",
+    "USA, UK, Germany, Cuba (Anomaly)",
+    "Nigeria, Ethiopia, Pakistan, Haiti",
+    "Japan, UAE, Poland, Russia",
+    "South Africa, Botswana, Zimbabwe",
+    "Singapore, Ireland, Luxembourg",
+    "Kiribati, Tuvalu, Marshall Islands"
+  ),
+  
+  Description = c(
+    "Lower-Middle income nations often with massive populations.",
+    "Upper-Middle income industrializing nations. Includes most of Latin America, North Africa, and China.",
+    "High-income, mature democracies with high life expectancy. Cuba is included here due to its health metrics matching the developed world.",
+    "Primarily sub-Saharan African countries with younger populations, developing infrastructure, and poorer health metrics.",
+    "A mix of the industrialized East (Japan/Korea), resource-rich Gulf states, and post-Soviet transition economies that are more dependent on trade.",
+    "A geographic cluster based in southern Africa with distinct health demographics (HIV prevalence).",
+    "Small city-states and nations with high traditional development metrics and trade disproportionate to their size.",
+    "Tiny island nations distinct for their extreme remoteness and small population size."
+  )
+)
+
+kbl(cluster_summary, 
+    caption = "Table 2: Interpretation of Socio-Economic Country Clusters", 
+    booktabs = TRUE) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), 
+                full_width = F, 
+                position = "left") %>%
+  column_spec(1, bold = TRUE, border_right = TRUE) %>%
+  column_spec(2, bold = TRUE, width = "12em") %>%
+  column_spec(3, width = "15em") %>%
+  column_spec(4, width = "30em")
+```
+
+While some of these clusters are defined by traditional economic development attributes (strongly correlated with the attributes associated with PC1 in Section 5 (I)), others are grouped by attributes such as health metrics and geography. For example, Cluster 6, while similar to countries in Cluster 4 with respect to traditional development metrics, is distinguished by those countries' high prevalence of HIV. Cluster 8 is defined as a grouping of 3 tiny island nations in the Pacific. Other clusters are eclectic groupings that could require further analysis. For example, Cluster 5 includes the developed Asian economies of Japan and South Korea, in addition to post-Soviet countries in eastern Europe and some Gulf states. A possible attribute grouping these countries together is a greater dependence on trade compared to Clusters 2 and 3.
+
+```{r, message=FALSE, comment=NA, warning=FALSE, echo=FALSE, fig.show='hide', fig.cap="Figure 5: Global Cluster Assignments"}
+#| label: global-clusters-map
+#| fig-align: center
+#| out-width: "60%"
+#| out-height: "60%"
+#| warning: false
+
+world_map <- ne_countries(scale = "medium", returnclass = "sf")
+world_map <- world_map[world_map$iso_a3_eh != "ATA", ]
+
+map_data_joined <- world_map %>%
+  left_join(world_dev_modified, by = c("iso_a3_eh" = "Code"))
+
+map_plot <- ggplot(data = map_data_joined) +
+  geom_sf(aes(fill = factor(cluster_hi1)), 
+          color = "white",
+          size = 0.2) +
+  scale_fill_manual(values = cluster_colors, 
+                    na.value = "grey95", 
+                    name = "Cluster Groups") +
+  labs(subtitle = "Mapped Hierarchical Clustering groups",
+       caption = "Grey areas indicate missing data") +
+  theme_void() +
+  theme(
+    plot.title = element_text(face = "bold", size = 16, hjust = 0),
+    legend.position = "right",
+    legend.title = element_text(face = "bold"),
+    panel.background = element_rect(fill = "aliceblue", color = NA)
+  ) +
+  
+  guides(fill = guide_legend(
+    override.aes = list(shape = 21, size = 4, color = NA, alpha = 1)
+  ))  +
+  coord_sf(ylim = c(-55, 85), expand = FALSE) 
+
+map_plot
+```
+
+#### Agglomerative Hierarchical Clustering Dendrogram
+
+When using agglomerative hierarchical clustering, a diagram known as a dendrogram can be created to visualize how different observations and clusters relate to one another. The dendrogram in our case is shown below in Figure 5. The horizontal axis represents each observation in the data, the vertical axis describes the distance between merged clusters, and the graph is a tree that describes how the observations are merged through the execution of the algorithm. Here, we can see that Clusters 3, 5, and 7 are relatively similar, as are Clusters 2 and 8, and Clusters 1, 4, and 6 respectively.
+
+```{r, message=FALSE, comment=NA, warning=FALSE, echo=FALSE, fig.cap="Figure 5: Hierarchical Clustering Dendrogram"}
+#| fig-align: center
+#| out-width: "55%"
+#| out-height: "55%"
+gg_dend <- as.ggdend(dend_colored)
+
+gg_dend$segments$col[is.na(gg_dend$segments$col)] <- "grey80"
+
+legend_data <- data.frame(
+  cluster_id = factor(1:k, levels = 1:k)
+)
+
+dend_plot <- ggplot() +
+  geom_segment(data = gg_dend$segments, 
+               aes(x = x, y = y, xend = xend, yend = yend, colour = col),
+               show.legend = FALSE) +
+  geom_point(data = legend_data, 
+             aes(x = 1, y = 1, fill = cluster_id), 
+             shape = 21, size = 1, stroke = 0, alpha = 0) + 
+  scale_colour_identity() + 
+  scale_fill_manual(values = cluster_colors, name = "Cluster Groups") + 
+  labs(x = "",       
+       y = "Distance") +
+  theme_minimal() + 
+  theme(
+    plot.title = element_text(face = "bold", size = 16),
+    axis.text.x = element_blank(),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor.x = element_blank(),
+    legend.position = "right"
+  ) +
+  guides(fill = guide_legend(override.aes = list(shape = 21, 
+                                                 alpha = 1, 
+                                                 size = 2, 
+                                                 colour = NA)))
+
+dend_plot
+```
+
+#### Combination of Clustering and PCA
+
+Figure 6 plots the clusters over the PCA biplot created in Section 5 (I). This combination of techniques allows a greater understanding of how clusters are distinguished from one another.
+
+```{r, message=FALSE, comment=NA, warning=FALSE, echo=FALSE, fig.cap="Figure 6: Hierarchical Clustering (PCA Projection)"}
+#| fig-align: center
+#| out-width: "60%"
+#| out-height: "60%"
+hi1 <- ggplot() +
+  geom_point(aes(x = Rpca$x[,1], 
+                 y = Rpca$x[,2], 
+                 color = factor(world_dev_modified$cluster_hi1)),
+             size = 1.5) +
+  labs(x = "PC1", 
+       y = "PC2", 
+       color = "Cluster Groups") + 
+  scale_color_manual(values = cluster_colors) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 16),
+    legend.position = "right"
+  )
+
+hi1
+```
+
+Interpretations of these clusterings can be attributed to the variables mentioned in Table 1 - which describes how variables contribute to PC1 and PC2. Clusters 1, 2, 3, and 4 are cleanly delineated along PC1 (which, as stated before, can be interpreted as a holistic measure of development). Cluster 5 is situated in-between Clusters 2 and 3 along PC1, but is slightly negatively associated with PC2, which implies these countries have a slightly greater dependence on trade. Clusters 1 and 7 are differentiated by being on opposite ends of the range of PC2. Cluster 6 seems similar to Cluster 4 in this biplot, but further investigation shows that a principle component (PC4) that is highly correlated with HIV prevalence explains that Cluster 6 is differentiated by a positive association with this principle component.
+
+### (III) Conclusion
+
+These 8 clusters are groupings that provide enough detail for WFUGPI to differentiate between development profiles beyond traditional groupings such as "developed" and "developing". In addition, through use of PCA, we are able to identify important variables where these clusters diverge and thus provide insight into targeted investment and policy recommendations for each cluster. Possible areas for further research include a systematic deep dive into how variables differ across clusters or an analysis of what variables are most able to predict how countries are clustered.
