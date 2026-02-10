@@ -69,6 +69,7 @@ world_dev <- world_dev %>%
 Before conducting the multivariate analysis, we first need to understand the dataset. The World Bank's dataset consists of 217 observations for 27 variables. Given the diversity of development indicators and the expected differences in scale and distribution, we plotted boxplots of all numeric variables on a log10 scale to identify patterns, extreme values, and potential pre-processing needs. The log transformation was applied to accommodate the wide range of values observed in the dataset, specifically addressing the disproportionately large scale of GDP.
 
 ```{r, fig.width = 10, dpi=300, message=FALSE, comment=NA, warning=FALSE, echo=FALSE, fig.cap = "Figure 1: Boxplots of Development Indicators (Log Scale)"}
+#| label: boxplots-log-scale
 #| out-width: "75%"
 #| out-height: "75%"
 long_data <- world_dev %>%
@@ -109,6 +110,7 @@ The log-scaled boxplots reveal skewness, extreme outlying countries, and the dif
 In addition to scale differences, the dataset contains a substantial number of missing values, which must be addressed to avoid bias or distortion in the analysis. A preliminary inspection revealed a total of 1,087 missing values across the dataset; visual diagnostics clearly show that missingness is not random - it varies considerably by variable and by country.
 
 ```{r, fig.width = 7, dpi = 300, message=FALSE, comment=NA, warning=FALSE, echo=FALSE, fig.cap = "Figure 2: Visualization of Missing Data Structure and Proportions by Rows"}
+#| label: missing-data-structure
 #| out-width: "70%"
 #| out-height: "70%"
 row.plot <- world_dev %>%
@@ -185,6 +187,7 @@ For the remaining missing values, we implemented median imputation for each vari
 After data removal and data processing, we are left with a data set of 23 numerical variables. We then examined how the variables relate to one another. We computed the correlation matrix for all post-imputation variables, shown in Figure 3. Dark blue squares indicate that two variables are highly positively correlated, while dark red squares indicate that two variables are highly negatively correlated. White squares indicate two variables are relatively uncorrelated.
 
 ```{r, fig.width=7, dpi=400, message=FALSE, comment=NA, warning=FALSE, echo=FALSE, fig.cap="Figure 3: Correlation Matrix"}
+#| label: correlation-matrix
 #| out-width: "65%"
 #| out-height: "65%"
 cor_mat_impute <- cor(world_dev %>%
@@ -303,6 +306,7 @@ kable(
 PC1 and PC2 capture 40% of the variability in the dataset. In Figure 4 we visualize the "biplot" of these two principal components, which plots each country with respect to their PC1 and PC2 scores. The arrows represent how the most strongly correlated original variables contribute to these principles components.
 
 ```{r, message=FALSE, comment=NA, warning=FALSE, echo=FALSE, fig.cap = "Figure 4: PC1 vs PC2 plot with Original Variable Projection"}
+#| label: pca-biplot
 #| fig-align: center
 #| out-width: "60%"
 #| out-height: "60%"
@@ -377,6 +381,7 @@ In Figure 4, we can see that "Agriculture", "Birth Rate" and "Infant Mortality" 
 ### (II) Clustering
 
 ```{r, message=FALSE, comment=NA, warning=FALSE, echo=FALSE, fig.show='hide', fig.cap = "K-means Clustering with 1st and 2nd PCs"}
+#| label: kmeans-clustering
 #| out-width: "60%"
 #| out-height: "60%"
 world_dev_modified <- world_dev
@@ -529,6 +534,7 @@ map_plot
 When using agglomerative hierarchical clustering, a diagram known as a dendrogram can be created to visualize how different observations and clusters relate to one another. The dendrogram in our case is shown below in Figure 5. The horizontal axis represents each observation in the data, the vertical axis describes the distance between merged clusters, and the graph is a tree that describes how the observations are merged through the execution of the algorithm. Here, we can see that Clusters 3, 5, and 7 are relatively similar, as are Clusters 2 and 8, and Clusters 1, 4, and 6 respectively.
 
 ```{r, message=FALSE, comment=NA, warning=FALSE, echo=FALSE, fig.cap="Figure 5: Hierarchical Clustering Dendrogram"}
+#| label: hierarchical-dendrogram
 #| fig-align: center
 #| out-width: "55%"
 #| out-height: "55%"
@@ -572,6 +578,7 @@ dend_plot
 Figure 6 plots the clusters over the PCA biplot created in Section 5 (I). This combination of techniques allows a greater understanding of how clusters are distinguished from one another.
 
 ```{r, message=FALSE, comment=NA, warning=FALSE, echo=FALSE, fig.cap="Figure 6: Hierarchical Clustering (PCA Projection)"}
+#| label: hierarchical-pca-projection
 #| fig-align: center
 #| out-width: "60%"
 #| out-height: "60%"
